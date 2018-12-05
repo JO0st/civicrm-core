@@ -368,6 +368,53 @@ class CRM_Contact_Form_SelectorTest extends CiviUnitTestCase {
   }
 
   /**
+   * Test the value use in where clause if it's case sensitive or not against each MySQL operators
+   */
+  public function testWhereClauseByOperator() {
+    $contactID = $this->individualCreate(['first_name' => 'Adam']);
+
+    $filters = [
+      'IS NOT NULL' => 1,
+      '=' => 'Adam',
+      'LIKE' => '%Ad%',
+      'RLIKE' => '^A[a-z]{3}$',
+      'IN' => ['IN' => ['Adam']],
+    ];
+    $filtersByWhereClause = [
+      'IS NOT NULL' => '( contact_a.first_name IS NOT NULL )', // doesn't matter
+      '=' => "( contact_a.first_name = 'Adam' )", // case sensitive check
+      'LIKE' => "( contact_a.first_name LIKE '%ad%' )", // case insensitive check
+      'RLIKE' => "(  contact_a.first_name RLIKE BINARY '^A[a-z]{3}$'  )", // case sensitive check
+      'IN' => '( contact_a.first_name IN ("Adam") )', // case sensitive check
+    ];
+    foreach ($filters as $op => $filter) {
+      $selector = new CRM_Contact_Selector(
+        'CRM_Contact_Selector',
+        ['first_name' => [$op => $filter]],
+        [[
+          0 => 'first_name',
+          1 => $op,
+          2 => $filter,
+          3 => 1,
+          4 => 0,
+        ]],
+        [],
+        CRM_Core_Action::NONE,
+        NULL,
+        FALSE,
+        'builder'
+      );
+
+      $sql = $selector->getQueryObject()->query();
+      $this->assertEquals(TRUE, strpos($sql[2], $filtersByWhereClause[$op]));
+
+      $rows = $selector->getRows(CRM_Core_Action::VIEW, 0, TRUE, NULL);
+      $this->assertEquals(1, count($rows));
+      $this->assertEquals($contactID, key($rows));
+    }
+  }
+
+  /**
    * Test if custom table is added in from clause when
    * search results are ordered by a custom field.
    */
@@ -418,6 +465,60 @@ class CRM_Contact_Form_SelectorTest extends CiviUnitTestCase {
     $this->assertTrue(in_array($cgTableName, array_keys($query->_tables)));
     //Assert if from clause joins the custom table.
     $this->assertTrue(strpos($query->_fromClause, $cgTableName) !== FALSE);
+  }
+
+  /**
+   * Check where clause of a date custom field when 'IS NOT EMPTY' operator is used
+   */
+  public function testCustomDateField() {
+    $contactID = $this->individualCreate();
+    //Create a test custom group and field.
+    $customGroup = $this->callAPISuccess('CustomGroup', 'create', array(
+      'title' => "test custom group",
+      'extends' => "Individual",
+    ));
+    $customTableName = $this->callAPISuccess('CustomGroup', 'getValue', ['id' => $customGroup, 'return' => 'table_name']);
+    $customGroupTableName = $customGroup['values'][$customGroup['id']]['table_name'];
+
+    $createdField = $this->callAPISuccess('customField', 'create', [
+      'data_type' => 'Date',
+      'html_type' => 'Select Date',
+      'date_format' => 'd M yy',
+      'time_format' => 1,
+      'label' => 'test field',
+      'custom_group_id' => $customGroup['id'],
+    ]);
+    $customFieldColumnName = $createdField['values'][$createdField['id']]['column_name'];
+
+    $this->callAPISuccess('Contact', 'create', [
+      'id' => $contactID,
+      'custom_' . $createdField['id'] => date('YmdHis'),
+    ]);
+
+    $selector = new CRM_Contact_Selector(
+      'CRM_Contact_Selector',
+      ['custom_' . $createdField['id'] => ['IS NOT EMPTY' => 1]],
+      [[
+        0 => 'custom_' . $createdField['id'],
+        1 => 'IS NOT NULL',
+        2 => 1,
+        3 => 1,
+        4 => 0,
+      ]],
+      [],
+      CRM_Core_Action::NONE,
+      NULL,
+      FALSE,
+      'builder'
+    );
+
+    $whereClause = $selector->getQueryObject()->query()[2];
+    $expectedClause = sprintf("( %s.%s IS NOT NULL )", $customGroupTableName, $customFieldColumnName);
+    // test the presence of expected date clause
+    $this->assertEquals(TRUE, strpos($whereClause, $expectedClause));
+
+    $rows = $selector->getRows(CRM_Core_Action::VIEW, 0, TRUE, NULL);
+    $this->assertEquals(1, count($rows));
   }
 
   /**

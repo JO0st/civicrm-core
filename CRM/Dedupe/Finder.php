@@ -125,6 +125,8 @@ class CRM_Dedupe_Finder {
     if (!$params) {
       return array();
     }
+    // This may no longer be required - see https://github.com/civicrm/civicrm-core/pull/13176
+    $params = array_filter($params);
 
     $foundByID = FALSE;
     if ($ruleGroupID) {
@@ -170,7 +172,7 @@ class CRM_Dedupe_Finder {
    * @param int $rgid
    *   Rule group id.
    * @param int $gid
-   *   Contact group id (currently, works only with non-smart groups).
+   *   Contact group id.
    *
    * @param int $searchLimit
    *  Limit for the number of contacts to be used for comparison.
@@ -181,7 +183,7 @@ class CRM_Dedupe_Finder {
    *   array of (cid1, cid2, weight) dupe triples
    */
   public static function dupesInGroup($rgid, $gid, $searchLimit = 0) {
-    $cids = array_keys(CRM_Contact_BAO_Group::getMember($gid, $searchLimit));
+    $cids = array_keys(CRM_Contact_BAO_Group::getMember($gid, TRUE, $searchLimit));
     if (!empty($cids)) {
       return self::dupes($rgid, $cids);
     }

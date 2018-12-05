@@ -325,7 +325,7 @@ class CRM_Activity_BAO_Query {
       case 'activity_result':
         if (is_array($value)) {
           $safe = [];
-          foreach ($values as $id => $k) {
+          foreach ($value as $id => $k) {
             $safe[] = "'" . CRM_Utils_Type::escape($k, 'String') . "'";
           }
           $query->_where[$grouping][] = "civicrm_activity.result IN (" . implode(',', $safe) . ")";
@@ -413,11 +413,16 @@ class CRM_Activity_BAO_Query {
         break;
 
       case 'source_contact':
-        $activityContacts = CRM_Activity_BAO_ActivityContact::buildOptions('record_type_id', 'validate');
-        $sourceID = CRM_Utils_Array::key('Activity Source', $activityContacts);
+        $sourceID = CRM_Core_PseudoConstant::getKey(
+          'CRM_Activity_BAO_ActivityContact',
+          'record_type_id',
+          'Activity Source'
+        );
         $from = "
-        INNER JOIN civicrm_contact source_contact ON
-          (civicrm_activity_contact.contact_id = source_contact.id) AND civicrm_activity_contact.record_type_id = {$sourceID}";
+          LEFT JOIN civicrm_activity_contact source_activity
+            ON (source_activity.activity_id = civicrm_activity_contact.activity_id
+              AND source_activity.record_type_id = {$sourceID})
+          LEFT JOIN civicrm_contact source_contact ON (source_activity.contact_id = source_contact.id)";
         break;
 
       case 'parent_id':
@@ -429,14 +434,25 @@ class CRM_Activity_BAO_Query {
   }
 
   /**
+   * Get the metadata for fields to be included on the activity search form.
+   *
+   * @todo ideally this would be a trait included on the activity search & advanced search
+   * rather than a static function.
+   */
+  public static function getSearchFieldMetadata() {
+    $fields = ['activity_type_id'];
+    $metadata = civicrm_api3('Activity', 'getfields', [])['values'];
+    return array_intersect_key($metadata, array_flip($fields));
+  }
+
+  /**
    * Add all the elements shared between case activity search and advanced search.
    *
-   * @param CRM_Core_Form $form
+   * @param CRM_Core_Form_Search $form
    */
   public static function buildSearchForm(&$form) {
-    $form->addSelect('activity_type_id',
-      array('entity' => 'activity', 'label' => ts('Activity Type(s)'), 'multiple' => 'multiple', 'option_url' => NULL, 'placeholder' => ts('- any -'))
-    );
+    $form->addSearchFieldMetadata(['Activity' => self::getSearchFieldMetadata()]);
+    $form->addFormFieldsFromMetadata();
 
     CRM_Core_Form_Date::buildDateRange($form, 'activity_date', 1, '_low', '_high', ts('From'), FALSE, FALSE);
     $form->addElement('hidden', 'activity_date_range_error');

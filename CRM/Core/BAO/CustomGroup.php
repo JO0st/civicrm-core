@@ -147,7 +147,9 @@ class CRM_Core_BAO_CustomGroup extends CRM_Core_DAO_CustomGroup {
           'is_multiple'
         );
 
-        if ($params['is_multiple'] != $isMultiple) {
+        // dev/core#227 Fix issue where is_multiple in params maybe an empty string if checkbox is not rendered on the form.
+        $paramsIsMultiple = empty($params['is_multiple']) ? 0 : 1;
+        if ($paramsIsMultiple != $isMultiple) {
           $tableNameNeedingIndexUpdate = CRM_Core_DAO::getFieldValue(
             'CRM_Core_DAO_CustomGroup',
             $params['id'],
@@ -251,8 +253,8 @@ class CRM_Core_BAO_CustomGroup extends CRM_Core_DAO_CustomGroup {
    * @param bool $is_active
    *   Value we want to set the is_active field.
    *
-   * @return Object
-   *   DAO object on success, null otherwise
+   * @return bool
+   *   true if we found and updated the object, else false
    */
   public static function setIsActive($id, $is_active) {
     // reset the cache
@@ -474,6 +476,8 @@ LEFT JOIN civicrm_custom_field ON (civicrm_custom_field.custom_group_id = civicr
       $in = "'$entityType'";
     }
 
+    $params = array();
+    $sqlParamKey = 1;
     if (!empty($subTypes)) {
       foreach ($subTypes as $key => $subType) {
         $subTypeClauses[] = self::whereListHas("civicrm_custom_group.extends_entity_column_value", self::validateSubTypeByEntity($entityType, $subType));
@@ -490,7 +494,9 @@ WHERE civicrm_custom_group.is_active = 1
   AND $subTypeClause
 ";
       if ($subName) {
-        $strWhere .= " AND civicrm_custom_group.extends_entity_column_id = {$subName} ";
+        $strWhere .= " AND civicrm_custom_group.extends_entity_column_id = %{$sqlParamKey}";
+        $params[$sqlParamKey] = array($subName, 'String');
+        $sqlParamKey = $sqlParamKey + 1;
       }
     }
     else {
@@ -504,11 +510,10 @@ WHERE civicrm_custom_group.is_active = 1
       }
     }
 
-    $params = array();
     if ($groupID > 0) {
       // since we want a specific group id we add it to the where clause
-      $strWhere .= " AND civicrm_custom_group.id = %1";
-      $params[1] = array($groupID, 'Integer');
+      $strWhere .= " AND civicrm_custom_group.id = %{$sqlParamKey}";
+      $params[$sqlParamKey] = array($groupID, 'Integer');
     }
     elseif (!$groupID) {
       // since groupID is false we need to show all Inline groups
@@ -1559,7 +1564,7 @@ ORDER BY civicrm_custom_group.weight,
 
           case 'File':
             if ($skipFile) {
-              continue;
+              break;
             }
 
             //store the file in d/b
@@ -1634,6 +1639,9 @@ ORDER BY civicrm_custom_group.weight,
         $fieldId = $field['id'];
         $elementName = $field['element_name'];
         CRM_Core_BAO_CustomField::addQuickFormElement($form, $elementName, $fieldId, $required);
+        if ($form->getAction() == CRM_Core_Action::VIEW) {
+          $form->getElement($elementName)->freeze();
+        }
       }
     }
   }

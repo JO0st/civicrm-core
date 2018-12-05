@@ -547,21 +547,22 @@ function civicrm_api3_mailing_event_open($params) {
  * @throws \API_Exception
  */
 function civicrm_api3_mailing_preview($params) {
-  civicrm_api3_verify_mandatory($params,
-    'CRM_Mailing_DAO_Mailing',
-    array('id'),
-    FALSE
-  );
-
   $fromEmail = NULL;
   if (!empty($params['from_email'])) {
     $fromEmail = $params['from_email'];
   }
 
-  $session = CRM_Core_Session::singleton();
   $mailing = new CRM_Mailing_BAO_Mailing();
-  $mailing->id = $params['id'];
-  $mailing->find(TRUE);
+  $mailingID = CRM_Utils_Array::value('id', $params);
+  if ($mailingID) {
+    $mailing->id = $mailingID;
+    $mailing->find(TRUE);
+  }
+  else {
+    $mailing->copyValues($params);
+  }
+
+  $session = CRM_Core_Session::singleton();
 
   CRM_Mailing_BAO_Mailing::tokenReplace($mailing);
 
@@ -598,6 +599,8 @@ function civicrm_api3_mailing_preview($params) {
 function _civicrm_api3_mailing_send_test_spec(&$spec) {
   $spec['test_group']['title'] = 'Test Group ID';
   $spec['test_email']['title'] = 'Test Email Address';
+  $spec['mailing_id']['api.required'] = TRUE;
+  $spec['mailing_id']['title'] = ts('Mailing Id');
 }
 
 /**
@@ -620,6 +623,10 @@ function civicrm_api3_mailing_send_test($params) {
   );
 
   $testEmailParams = _civicrm_api3_generic_replace_base_params($params);
+  if (isset($testEmailParams['id'])) {
+    unset($testEmailParams['id']);
+  }
+
   $testEmailParams['is_test'] = 1;
   $testEmailParams['status'] = 'Scheduled';
   $testEmailParams['scheduled_date'] = CRM_Utils_Date::processDate(date('Y-m-d'), date('H:i:s'));
@@ -679,8 +686,7 @@ function civicrm_api3_mailing_send_test($params) {
   }
 
   $isComplete = FALSE;
-  $config = CRM_Core_Config::singleton();
-  $mailerJobSize = Civi::settings()->get('mailerJobSize');
+
   while (!$isComplete) {
     // Q: In CRM_Mailing_BAO_Mailing::processQueue(), the three runJobs*()
     // functions are all called. Why does Mailing.send_test only call one?

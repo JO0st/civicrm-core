@@ -150,21 +150,17 @@ class api_v3_ContactTest extends CiviUnitTestCase {
    *
    * @param string $string
    *   String to be tested.
-   * @param bool $checkCharSet
+   *
    *   Bool to see if we should check charset.
    *
    * @throws \Exception
    */
-  public function testInternationalStrings($string, $checkCharSet = FALSE) {
+  public function testInternationalStrings($string) {
     $this->callAPISuccess('Contact', 'create', array_merge(
       $this->_params,
       array('first_name' => $string)
     ));
-    if ($checkCharSet) {
-      if (!CRM_Utils_SQL::supportStorageOfAccents()) {
-        $this->markTestIncomplete('Database is not Charset UTF8 therefore can not store accented strings properly');
-      }
-    }
+
     $result = $this->callAPISuccessGetSingle('Contact', array('first_name' => $string));
     $this->assertEquals($string, $result['first_name']);
 
@@ -183,8 +179,8 @@ class api_v3_ContactTest extends CiviUnitTestCase {
    */
   public function getInternationalStrings() {
     $invocations = array();
-    $invocations[] = array('Scarabée', TRUE);
-    $invocations[] = array('Iñtërnâtiônàlizætiøn', TRUE);
+    $invocations[] = array('Scarabée');
+    $invocations[] = array('Iñtërnâtiônàlizætiøn');
     $invocations[] = array('これは日本語のテキストです。読めますか');
     $invocations[] = array('देखें हिन्दी कैसी नजर आती है। अरे वाह ये तो नजर आती है।');
     return $invocations;
@@ -256,7 +252,7 @@ class api_v3_ContactTest extends CiviUnitTestCase {
     ));
 
     // create a parent
-    $contact = $this->callAPISuccess('contact', 'create', array(
+    $this->callAPISuccess('contact', 'create', array(
       'email' => 'parent@example.com',
       'contact_type' => 'Individual',
     ));
@@ -394,6 +390,22 @@ class api_v3_ContactTest extends CiviUnitTestCase {
     $contact = $this->callAPISuccess('contact', 'create', $params);
     $params['sort_name'] = 'abc1';
     $this->getAndCheck($params, $contact['id'], 'contact');
+  }
+
+  /**
+   * Test that name searches are case insensitive.
+   */
+  public function testGetNameVariantsCaseInsensitive() {
+    $this->callAPISuccess('contact', 'create', [
+      'display_name' => 'Abc1',
+      'contact_type' => 'Individual',
+    ]);
+    $this->callAPISuccessGetSingle('Contact', ['display_name' => 'aBc1']);
+    $this->callAPISuccessGetSingle('Contact', ['sort_name' => 'aBc1']);
+    Civi::settings()->set('includeNickNameInName', TRUE);
+    $this->callAPISuccessGetSingle('Contact', ['display_name' => 'aBc1']);
+    $this->callAPISuccessGetSingle('Contact', ['sort_name' => 'aBc1']);
+    Civi::settings()->set('includeNickNameInName', FALSE);
   }
 
   /**
@@ -3183,7 +3195,7 @@ class api_v3_ContactTest extends CiviUnitTestCase {
    * CRM-15443 - ensure getlist api does not return deleted contacts.
    */
   public function testGetlistExcludeConditions() {
-    $name = md5(time());
+    $name = 'Scarabée';
     $contact = $this->individualCreate(array('last_name' => $name));
     $this->individualCreate(array('last_name' => $name, 'is_deceased' => 1));
     $this->individualCreate(array('last_name' => $name, 'is_deleted' => 1));
@@ -3386,6 +3398,38 @@ class api_v3_ContactTest extends CiviUnitTestCase {
       'option_group_id' => 'priority',
     )));
 
+  }
+
+  /**
+   * Test retrieving merged contacts.
+   *
+   * The goal here is to start with a contact deleted by merged and find out the contact that is the current version of them.
+   */
+  public function testMergedGet() {
+    $this->contactIDs[] = $this->individualCreate();
+    $this->contactIDs[] = $this->individualCreate();
+    $this->contactIDs[] = $this->individualCreate();
+    $this->contactIDs[] = $this->individualCreate();
+
+    // First do an 'unnatural merge' - they 'like to merge into the lowest but this will mean that contact 0 merged to contact [3].
+    // When the batch merge runs.... the new lowest contact is contact[1]. All contacts will merge into that contact,
+    // including contact[3], resulting in only 3 existing at the end. For each contact the correct answer to 'who did I eventually
+    // wind up being should be [1]
+    $this->callAPISuccess('Contact', 'merge', ['to_remove_id' => $this->contactIDs[0], 'to_keep_id' => $this->contactIDs[3]]);
+
+    $this->callAPISuccess('Job', 'process_batch_merge', []);
+    foreach ($this->contactIDs as $contactID) {
+      if ($contactID === $this->contactIDs[1]) {
+        continue;
+      }
+      $result = $this->callAPIAndDocument('Contact', 'getmergedto', ['sequential' => 1, 'contact_id' => $contactID], __FUNCTION__, __FILE__);
+      $this->assertEquals(1, $result['count']);
+      $this->assertEquals($this->contactIDs[1], $result['values'][0]['id']);
+    }
+
+    $result = $this->callAPIAndDocument('Contact', 'getmergedfrom', ['contact_id' => $this->contactIDs[1]], __FUNCTION__, __FILE__)['values'];
+    $mergedContactIds = array_merge(array_diff($this->contactIDs, [$this->contactIDs[1]]));
+    $this->assertEquals($mergedContactIds, array_keys($result));
   }
 
   /**

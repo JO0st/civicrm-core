@@ -131,6 +131,59 @@ class CRM_Mailing_BAO_MailingTest extends CiviUnitTestCase {
   }
 
   /**
+   * Test mailing receipients when using previous mailing as include and contact is in exclude as well
+   */
+  public function testMailingIncludePreviousMailingExcludeGroup() {
+    $groupName = 'Test static group ' . substr(sha1(rand()), 0, 7);
+    $groupName2 = 'Test static group 2' . substr(sha1(rand()), 0, 7);
+    $groupID = $this->groupCreate([
+      'name' => $groupName,
+      'title' => $groupName,
+      'is_active' => 1,
+    ]);
+    $groupID2 = $this->groupCreate([
+      'name' => $groupName2,
+      'title' => $groupName2,
+      'is_active' => 1,
+    ]);
+    $contactID = $this->individualCreate(array(), 0);
+    $contactID2 = $this->individualCreate(array(), 2);
+    $this->callAPISuccess('GroupContact', 'Create', array(
+      'group_id' => $groupID,
+      'contact_id' => $contactID,
+    ));
+    $this->callAPISuccess('GroupContact', 'Create', array(
+      'group_id' => $groupID,
+      'contact_id' => $contactID2,
+    ));
+    $this->callAPISuccess('GroupContact', 'Create', array(
+      'group_id' => $groupID2,
+      'contact_id' => $contactID2,
+    ));
+    // Create dummy mailing
+    $mailingID = $this->callAPISuccess('Mailing', 'create', array())['id'];
+    $this->createMailingGroup($mailingID, $groupID);
+    $expectedContactIDs = [$contactID, $contactID2];
+    $this->assertRecipientsCorrect($mailingID, $expectedContactIDs);
+    $mailingID2 = $this->callAPISuccess('Mailing', 'create', array())['id'];
+    $this->createMailingGroup($mailingID2, $groupID2, 'Exclude');
+    $this->callAPISuccess('MailingGroup', 'create', array(
+      'mailing_id' => $mailingID2,
+      'group_type' => 'Include',
+      'entity_table' => CRM_Mailing_BAO_Mailing::getTableName(),
+      'entity_id' => $mailingID,
+    ));
+    $expectedContactIDs = [$contactID];
+    $this->assertRecipientsCorrect($mailingID2, $expectedContactIDs);
+    $this->callAPISuccess('mailing', 'delete', ['id' => $mailingID2]);
+    $this->callAPISuccess('mailing', 'delete', ['id' => $mailingID]);
+    $this->callAPISuccess('group', 'delete', ['id' => $groupID]);
+    $this->callAPISuccess('group', 'delete', ['id' => $groupID2]);
+    $this->callAPISuccess('contact', 'delete', ['id' => $contactID, 'skip_undelete' => TRUE]);
+    $this->callAPISuccess('contact', 'delete', ['id' => $contactID2, 'skip_undelete' => TRUE]);
+  }
+
+  /**
    * Test verify that a disabled mailing group doesn't prvent access to the mailing generated with the group.
    */
   public function testGetMailingDisabledGroup() {
@@ -346,6 +399,21 @@ class CRM_Mailing_BAO_MailingTest extends CiviUnitTestCase {
 
     // Tear down: delete mailing, groups, contacts
     $this->deleteMailing($mailing['id']);
+
+    // Create a New mailing, Testing contacts removed from smart group.
+    // In this case groupIDs6 will only pick up contacts[0] amd contacts[8] with it's
+    // criteria. However we are deliberly going to remove contactIds[8] from the group
+    // Which should mean the mainling only finds 1 contact that is contactIds[0]
+    $mailing = $this->callAPISuccess('Mailing', 'create', array());
+    $this->callAPISuccess('GroupContact', 'Create', array(
+      'group_id' => $groupIDs[6],
+      'contact_id' => $contactIDs[8],
+      'status' => 'Removed',
+    ));
+    $this->createMailingGroup($mailing['id'], $groupIDs[6]);
+    $this->assertRecipientsCorrect($mailing['id'], [$contactIDs[0]]);
+    // Tear down: delete mailing, groups, contacts
+    $this->deleteMailing($mailing['id']);
     foreach ($groupIDs as $groupID) {
       $this->groupDelete($groupID);
     }
@@ -360,6 +428,7 @@ class CRM_Mailing_BAO_MailingTest extends CiviUnitTestCase {
   public function testgetRecipientsSMS() {
     // Tests for SMS bulk mailing recipients
     // +CRM-21320 Ensure primary mobile number is selected over non-primary
+    // +core/384 Ensure that a secondary mobile number is selected if the primary can not receive SMS
 
     // Setup
     $smartGroupParams = array(
@@ -388,6 +457,13 @@ class CRM_Mailing_BAO_MailingTest extends CiviUnitTestCase {
     $this->callAPISuccess('GroupContact', 'Create', array(
       'group_id' => $group,
       'contact_id' => $contactID2,
+    ));
+
+    // Create contact 3 and add in group
+    $contactID3 = $this->individualCreate(array(), 2);
+    $this->callAPISuccess('GroupContact', 'Create', array(
+      'group_id' => $group,
+      'contact_id' => $contactID3,
     ));
 
     $contactIDPhoneRecords = array(
@@ -424,12 +500,30 @@ class CRM_Mailing_BAO_MailingTest extends CiviUnitTestCase {
           'is_primary' => 1,
         ))),
       ),
+      // Create primary that cant recieve SMS but a secondary that can, to test core/384
+      $contactID3 => array(
+        'other_phone_id' => CRM_Utils_Array::value('id', $this->callAPISuccess('Phone', 'create', array(
+          'contact_id' => $contactID3,
+          'phone' => "03 01",
+          'location_type_id' => "Home",
+          'phone_type_id' => "Mobile",
+          'is_primary' => 0,
+        ))),
+        'primary_phone_id' => CRM_Utils_Array::value('id', $this->callAPISuccess('Phone', 'create', array(
+          'contact_id' => $contactID3,
+          'phone' => "03 02",
+          'location_type_id' => "Work",
+          'phone_type_id' => "Phone",
+          'is_primary' => 1,
+        ))),
+      ),
     );
 
     // Prepare expected results
     $checkPhoneIDs = array(
       $contactID1 => $contactIDPhoneRecords[$contactID1]['primary_phone_id'],
       $contactID2 => $contactIDPhoneRecords[$contactID2]['primary_phone_id'],
+      $contactID3 => $contactIDPhoneRecords[$contactID3]['other_phone_id'],
     );
 
     // Create mailing
@@ -441,9 +535,9 @@ class CRM_Mailing_BAO_MailingTest extends CiviUnitTestCase {
     $recipients = $this->callAPISuccess('MailingRecipients', 'get', array('mailing_id' => $mailing['id']));
 
     // Check the count is correct
-    $this->assertEquals(2, $recipients['count'], 'Check recipient count');
+    $this->assertEquals(3, $recipients['count'], 'Check recipient count');
 
-    // Check we got the 'primary' mobile for both contacts
+    // Check we got the 'primary' mobile for contacts or the other phone when the primary was no SMS capable.
     foreach ($recipients['values'] as $value) {
       $this->assertEquals($value['phone_id'], $checkPhoneIDs[$value['contact_id']], 'Check correct phone number for contact ' . $value['contact_id']);
     }
@@ -454,6 +548,83 @@ class CRM_Mailing_BAO_MailingTest extends CiviUnitTestCase {
     $this->groupDelete($group);
     $this->contactDelete($contactID1);
     $this->contactDelete($contactID2);
+    $this->contactDelete($contactID3);
+  }
+
+  /**
+   * Test alterMailingRecipients Hook which is called twice when we create a Mailing,
+   *  1. In the first call we will modify the mailing filter to include only deceased recipients
+   *  2. In the second call we will check if only deceased recipient is populated in MailingRecipient table
+   */
+  public function testAlterMailingRecipientsHook() {
+    $groupID = $this->groupCreate();
+    $this->tagCreate(array('name' => 'Tagged'));
+
+    // Create deseased Contact 1 and add in group
+    $contactID1 = $this->individualCreate(array('email' => 'abc@test.com', 'is_deceased' => 1), 0);
+    // Create deseased Contact 2 and add in group
+    $contactID2 = $this->individualCreate(array('email' => 'def@test.com'), 1);
+    // Create deseased Contact 3 and add in group
+    $contactID3 = $this->individualCreate(array('email' => 'ghi@test.com', 'is_deceased' => 1), 2);
+
+    // Add both the created contacts in group
+    $this->callAPISuccess('GroupContact', 'Create', array(
+      'group_id' => $groupID,
+      'contact_id' => $contactID1,
+    ));
+    $this->callAPISuccess('GroupContact', 'Create', array(
+      'group_id' => $groupID,
+      'contact_id' => $contactID2,
+    ));
+    $this->callAPISuccess('GroupContact', 'Create', array(
+      'group_id' => $groupID,
+      'contact_id' => $contactID3,
+    ));
+    $this->entityTagAdd(array('contact_id' => $contactID3, 'tag_id' => 'Tagged'));
+
+    // trigger the alterMailingRecipients hook
+    $this->hookClass->setHook('civicrm_alterMailingRecipients', array($this, 'alterMailingRecipients'));
+
+    // create mailing that will trigger alterMailingRecipients hook
+    $params = array(
+      'name' => 'mailing name',
+      'subject' => 'Test Subject',
+      'body_html' => '<p>HTML Body</p>',
+      'text_html' => 'Text Body',
+      'created_id' => 1,
+      'groups' => array('include' => array($groupID)),
+      'scheduled_date' => 'now',
+    );
+    $this->callAPISuccess('Mailing', 'create', $params);
+  }
+
+  /**
+   * @implements CRM_Utils_Hook::alterMailingRecipients
+   *
+   * @param object $mailingObject
+   * @param array $criteria
+   * @param string $context
+   */
+  public function alterMailingRecipients(&$mailingObject, &$criteria, $context) {
+    if ($context == 'pre') {
+      // modify the filter to include only deceased recipient(s) that is Tagged
+      $criteria['is_deceased'] = CRM_Utils_SQL_Select::fragment()->where("civicrm_contact.is_deceased = 1");
+      $criteria['tagged_contact'] = CRM_Utils_SQL_Select::fragment()
+                                      ->join('civicrm_entity_tag', "INNER JOIN civicrm_entity_tag et ON et.entity_id = civicrm_contact.id AND et.entity_table = 'civicrm_contact'")
+                                      ->join('civicrm_tag', "INNER JOIN civicrm_tag t ON t.id = et.tag_id")
+                                      ->where("t.name = 'Tagged'");
+    }
+    else {
+      $mailingRecipients = $this->callAPISuccess('MailingRecipients', 'get', array(
+        'mailing_id' => $mailingObject->id,
+        'api.Email.getvalue' => array(
+          'id' => '$value.email_id',
+          'return' => 'email',
+        ),
+      ));
+      $this->assertEquals(1, $mailingRecipients['count'], 'Check recipient count');
+      $this->assertEquals('ghi@test.com', $mailingRecipients['values'][$mailingRecipients['id']]['api.Email.getvalue'], 'Check if recipient email belong to deceased contact');
+    }
   }
 
 }
